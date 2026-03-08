@@ -439,6 +439,11 @@ function App() {
   // ── AI scan (uses photo from refPhoto, sends to Gemini, auto-fills items)
   const scanBillPhoto = async () => {
     if (!refPhoto || scanning) return;
+    // Check AI availability first
+    if (!hasAI) {
+      setScanStatus('AI scanning requires GEMINI_API_KEY to be set on the server. Enter items manually for now.');
+      return;
+    }
     setScanning(true);
     setScanStatus('AI is reading your bill…');
     try {
@@ -635,14 +640,12 @@ function App() {
           >
             ✏️ Enter Manually
           </button>
-          {hasAI && (
-            <button
-              className={`mode-btn ${billMode === 'scan' ? 'active' : ''}`}
-              onClick={() => setBillMode('scan')}
-            >
-              📸 Scan with AI
-            </button>
-          )}
+          <button
+            className={`mode-btn ${billMode === 'scan' ? 'active' : ''}`}
+            onClick={() => setBillMode('scan')}
+          >
+            📸 Scan with AI
+          </button>
         </div>
 
         {/* ── MANUAL MODE ── */}
@@ -674,19 +677,17 @@ function App() {
                     <>
                       <img src={refPhoto} className="photo-ref-img" alt="Bill reference" />
 
-                      {hasAI && (
-                        <button
-                          className="btn-analyze"
-                          onClick={scanBillPhoto}
-                          disabled={scanning}
-                          style={{ marginTop: 10 }}
-                        >
-                          {scanning
-                            ? <><div className="spinner"></div> AI is reading your bill…</>
-                            : <><span>✨</span> Auto-fill Items from Photo</>
-                          }
-                        </button>
-                      )}
+                      <button
+                        className="btn-analyze"
+                        onClick={scanBillPhoto}
+                        disabled={scanning}
+                        style={{ marginTop: 10 }}
+                      >
+                        {scanning
+                          ? <><div className="spinner"></div> AI is reading your bill…</>
+                          : <><span>✨</span> Auto-fill Items from Photo</>
+                        }
+                      </button>
 
                       {scanStatus && (
                         <div className="scan-status">{scanStatus}</div>
