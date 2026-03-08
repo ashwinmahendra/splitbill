@@ -222,10 +222,28 @@ HTML = r"""<!DOCTYPE html>
 
     /* ── Manual item row ── */
     .manual-item { display: flex; align-items: center; gap: 10px; padding: 10px 0;
-                   border-bottom: 1px solid #f3f4f6; }
+                   border-bottom: 1px solid #f3f4f6; cursor: pointer; }
     .manual-item:last-child { border-bottom: none; }
+    .manual-item:hover { background: #f8fafc; margin: 0 -8px; padding: 10px 8px; border-radius: 8px; }
     .manual-item-name { flex: 1; font-size: 14px; font-weight: 500; }
     .manual-item-price { font-size: 14px; font-weight: 700; color: #1db87a; }
+    .edit-hint { font-size: 11px; color: #94a3b8; margin-left: auto; }
+
+    /* ── Inline edit row ── */
+    .edit-row { display: flex; gap: 6px; padding: 8px 0; border-bottom: 1px solid #f3f4f6;
+                align-items: center; }
+    .edit-row:last-child { border-bottom: none; }
+    .edit-input { padding: 8px 10px; border: 1.5px solid #1db87a; border-radius: 8px;
+                  font-size: 13px; outline: none; background: #fff; }
+    .edit-input-name { flex: 1; }
+    .edit-input-price { width: 80px; }
+    .btn-save { padding: 7px 12px; background: #1db87a; color: #fff; border: none;
+                border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; }
+    .btn-cancel { padding: 7px 10px; background: none; color: #94a3b8; border: 1.5px solid #e2e8f0;
+                  border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+
+    /* ── Math warning ── */
+    .alert-warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
 
     /* ── Tax/tip inputs ── */
     .field-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
@@ -294,6 +312,10 @@ function App() {
   const [manualTax, setManualTax]     = useState('');
   const [manualTip, setManualTip]     = useState('');
   const [hasAI, setHasAI]             = useState(false);
+  const [manualTotal, setManualTotal] = useState('');
+  const [editingIdx, setEditingIdx]   = useState(null);
+  const [editName, setEditName]       = useState('');
+  const [editPrice, setEditPrice]     = useState('');
   const [refPhoto, setRefPhoto]       = useState(null);
   const [refPhotoOpen, setRefPhotoOpen] = useState(true);
   const refPhotoRef = useRef(null);
@@ -388,7 +410,26 @@ function App() {
 
   const removeManualItem = idx => {
     setManualItems(items => items.filter((_, i) => i !== idx));
+    if (editingIdx === idx) setEditingIdx(null);
   };
+
+  const startEdit = idx => {
+    setEditingIdx(idx);
+    setEditName(manualItems[idx].name);
+    setEditPrice(String(manualItems[idx].price));
+  };
+
+  const saveEdit = () => {
+    const name = editName.trim();
+    const price = parseFloat(editPrice);
+    if (!name || isNaN(price) || price <= 0) return;
+    setManualItems(items => items.map((it, i) =>
+      i === editingIdx ? { ...it, name, price } : it
+    ));
+    setEditingIdx(null);
+  };
+
+  const cancelEdit = () => setEditingIdx(null);
 
   const finishManualEntry = () => {
     if (manualItems.length === 0 || people.length < 2) return;
@@ -618,11 +659,34 @@ function App() {
             {manualItems.length > 0 && (
               <div className="card">
                 {manualItems.map((item, i) => (
-                  <div key={i} className="manual-item">
-                    <span className="manual-item-name">{item.name}</span>
-                    <span className="manual-item-price">{fmt(item.price)}</span>
-                    <button className="btn-x" onClick={() => removeManualItem(i)} title="Remove">×</button>
-                  </div>
+                  editingIdx === i ? (
+                    <div key={i} className="edit-row">
+                      <input
+                        className="edit-input edit-input-name"
+                        value={editName}
+                        onChange={e => setEditName(e.target.value)}
+                        autoFocus
+                        onKeyDown={e => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') cancelEdit(); }}
+                      />
+                      <input
+                        className="edit-input edit-input-price"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={editPrice}
+                        onChange={e => setEditPrice(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') cancelEdit(); }}
+                      />
+                      <button className="btn-save" onClick={saveEdit}>Save</button>
+                      <button className="btn-cancel" onClick={cancelEdit}>✕</button>
+                    </div>
+                  ) : (
+                    <div key={i} className="manual-item" onClick={() => startEdit(i)}>
+                      <span className="manual-item-name">{item.name}</span>
+                      <span className="manual-item-price">{fmt(item.price)}</span>
+                      <button className="btn-x" onClick={e => { e.stopPropagation(); removeManualItem(i); }} title="Remove">×</button>
+                    </div>
+                  )
                 ))}
               </div>
             )}
@@ -682,12 +746,53 @@ function App() {
                   </div>
                 </div>
 
-                <div className="total-bar">
-                  <span className="total-lbl">Subtotal</span>
-                  <span className="total-amt">
-                    {fmt(manualSubtotal + (parseFloat(manualTax) || 0) + (parseFloat(manualTip) || 0))}
-                  </span>
+                <div className="card" style={{ marginTop: 12 }}>
+                  <div className="card-title">Bill Total (from receipt)</div>
+                  <div className="field-row" style={{ marginTop: 0 }}>
+                    <span className="field-label">Total</span>
+                    <input
+                      className="field-input"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="Enter total from receipt…"
+                      value={manualTotal}
+                      onChange={e => setManualTotal(e.target.value)}
+                    />
+                  </div>
                 </div>
+
+                {(() => {
+                  const calcTotal = manualSubtotal + (parseFloat(manualTax) || 0) + (parseFloat(manualTip) || 0);
+                  const expected = parseFloat(manualTotal);
+                  const hasExpected = manualTotal !== '' && !isNaN(expected) && expected > 0;
+                  const diff = hasExpected ? Math.abs(calcTotal - expected) : 0;
+                  const mathOk = !hasExpected || diff < 0.02;
+                  return (
+                    <>
+                      <div className="total-bar" style={!mathOk ? { borderColor: '#fde68a', background: '#fffbeb' } : {}}>
+                        <div>
+                          <span className="total-lbl">Calculated Total</span>
+                          {hasExpected && mathOk && (
+                            <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 600, marginTop: 2 }}>
+                              Math checks out!
+                            </div>
+                          )}
+                        </div>
+                        <span className="total-amt" style={!mathOk ? { color: '#dc2626' } : {}}>
+                          {fmt(calcTotal)}
+                        </span>
+                      </div>
+
+                      {!mathOk && (
+                        <div className="alert alert-warn" style={{ marginTop: 10 }}>
+                          Math doesn't add up! Your items + tax + tip = <strong>{fmt(calcTotal)}</strong> but the receipt says <strong>{fmt(expected)}</strong>.
+                          {' '}Off by <strong>{fmt(diff)}</strong>. Tap an item to edit it, or check tax/tip.
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
 
                 <button
                   className="btn-next"
@@ -975,7 +1080,7 @@ function App() {
             setBill(null); setImgPrev(null); setImgData(null);
             setAsgn({}); setPayerId(''); setError(null);
             setManualItems([]); setManualTax(''); setManualTip('');
-            setRefPhoto(null); setTab('bill');
+            setManualTotal(''); setRefPhoto(null); setTab('bill');
           }}
         >
           Split Another Bill
