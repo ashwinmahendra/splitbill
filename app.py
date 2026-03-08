@@ -386,7 +386,9 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: imgData, mediaType: imgType })
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data;
+      try { data = JSON.parse(rawText); } catch { throw new Error('Server returned invalid response. Make sure GEMINI_API_KEY is set.'); }
       if (data.error) throw new Error(data.error);
       setBill(data);
       const init = {};
@@ -452,7 +454,9 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: refPhoto, mediaType: 'image/jpeg' })
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error('Server returned invalid response. Make sure GEMINI_API_KEY is set and the server has google-generativeai installed.'); }
       if (data.error) throw new Error(data.error);
 
       // Auto-fill items
