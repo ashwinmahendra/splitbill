@@ -204,6 +204,22 @@ HTML = r"""<!DOCTYPE html>
                 background: transparent; color: #94a3b8; }
     .mode-btn.active { background: #fff; color: #1db87a; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 
+    /* ── Photo reference ── */
+    .photo-ref { border: 1.5px solid #eef1f4; border-radius: 14px; margin-bottom: 16px;
+                 overflow: hidden; }
+    .photo-ref-header { display: flex; align-items: center; justify-content: space-between;
+                        padding: 12px 16px; cursor: pointer; user-select: none; }
+    .photo-ref-header:hover { background: #f8fafc; }
+    .photo-ref-title { font-size: 13px; font-weight: 600; color: #64748b; }
+    .photo-ref-arrow { font-size: 12px; color: #94a3b8; transition: transform .2s; }
+    .photo-ref-arrow.open { transform: rotate(180deg); }
+    .photo-ref-body { padding: 0 16px 14px; }
+    .photo-ref-img { width: 100%; max-height: 300px; object-fit: contain; border-radius: 10px;
+                     border: 1px solid #e5e7eb; }
+    .photo-ref-upload { border: 2px dashed #d1d5db; border-radius: 10px; padding: 24px 16px;
+                        text-align: center; cursor: pointer; transition: all .2s; background: #fafbfc; }
+    .photo-ref-upload:hover { border-color: #1db87a; background: #f0faf5; }
+
     /* ── Manual item row ── */
     .manual-item { display: flex; align-items: center; gap: 10px; padding: 10px 0;
                    border-bottom: 1px solid #f3f4f6; }
@@ -278,6 +294,9 @@ function App() {
   const [manualTax, setManualTax]     = useState('');
   const [manualTip, setManualTip]     = useState('');
   const [hasAI, setHasAI]             = useState(false);
+  const [refPhoto, setRefPhoto]       = useState(null);
+  const [refPhotoOpen, setRefPhotoOpen] = useState(true);
+  const refPhotoRef = useRef(null);
 
   // Check if AI is available
   useEffect(() => {
@@ -544,6 +563,56 @@ function App() {
         {/* ── MANUAL MODE ── */}
         {billMode === 'manual' && (
           <>
+            {/* Photo reference */}
+            <div className="photo-ref">
+              <div className="photo-ref-header" onClick={() => refPhoto && setRefPhotoOpen(o => !o)}>
+                <span className="photo-ref-title">
+                  {refPhoto ? '📷 Bill Photo Reference' : '📷 Upload bill photo (optional)'}
+                </span>
+                {refPhoto && (
+                  <span className={`photo-ref-arrow ${refPhotoOpen ? 'open' : ''}`}>▼</span>
+                )}
+              </div>
+              {(!refPhoto || refPhotoOpen) && (
+                <div className="photo-ref-body">
+                  {!refPhoto ? (
+                    <div className="photo-ref-upload" onClick={() => refPhotoRef.current?.click()}>
+                      <div style={{ fontSize: 28, marginBottom: 6 }}>📸</div>
+                      <div style={{ fontSize: 13, color: '#64748b', fontWeight: 500 }}>
+                        Tap to upload a bill photo for reference
+                      </div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+                        JPG · PNG · HEIC · WEBP
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <img src={refPhoto} className="photo-ref-img" alt="Bill reference" />
+                      <div style={{ marginTop: 8, textAlign: 'center' }}>
+                        <button className="link-btn" onClick={() => setRefPhoto(null)}>
+                          ✕ Remove photo
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              <input
+                ref={refPhotoRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={e => {
+                  const file = e.target.files[0];
+                  if (!file || !file.type.startsWith('image/')) return;
+                  const r = new FileReader();
+                  r.onload = ev => setRefPhoto(ev.target.result);
+                  r.readAsDataURL(file);
+                  e.target.value = '';
+                }}
+              />
+            </div>
+
             <div className="card-title">Add bill items</div>
 
             {manualItems.length > 0 && (
@@ -906,7 +975,7 @@ function App() {
             setBill(null); setImgPrev(null); setImgData(null);
             setAsgn({}); setPayerId(''); setError(null);
             setManualItems([]); setManualTax(''); setManualTip('');
-            setTab('bill');
+            setRefPhoto(null); setTab('bill');
           }}
         >
           Split Another Bill
