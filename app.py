@@ -451,8 +451,14 @@ function App() {
   const cancelEdit = () => setEditingIdx(null);
 
   // ── OCR scanning
+  const ocrAvailable = typeof Tesseract !== 'undefined';
+
   const runOCR = async () => {
     if (!refPhoto || ocrScanning) return;
+    if (typeof Tesseract === 'undefined') {
+      setOcrStatus('OCR library still loading… please wait a moment and try again.');
+      return;
+    }
     setOcrScanning(true);
     setOcrProgress(0);
     setOcrStatus('Loading OCR engine…');
@@ -464,6 +470,10 @@ function App() {
             setOcrStatus('Reading bill…');
           } else if (m.status === 'loading language traineddata') {
             setOcrStatus('Loading language data…');
+            setOcrProgress(10);
+          } else if (m.status === 'initializing api') {
+            setOcrStatus('Initializing…');
+            setOcrProgress(5);
           }
         }
       });
@@ -476,53 +486,62 @@ function App() {
       let foundTax = null;
       let foundTip = null;
       let foundTotal = null;
+      let foundSubtotal = null;
 
-      // Keywords to skip (not individual items)
-      const skipWords = /^(subtotal|sub total|total|amount due|balance|change|cash|card|visa|mastercard|amex|thank|welcome|order|table|server|guest|date|time|receipt|invoice|check|tel|phone|fax|www|http|address|\d{1,2}[\/\-]\d{1,2})/i;
-      const taxWords = /^(tax|vat|gst|hst|sales tax|state tax)/i;
+      // Keywords
+      const skipWords = /^(subtotal|sub total|sub-total|amount due|balance|change due|change|cash|card|visa|mastercard|amex|discover|thank|welcome|order|dine|table|server|guest|cashier|date|time|receipt|invoice|check|tel|phone|fax|www|http|address|online|clover|privacy|medium|large|small|floor|\d{1,2}[\/\-]\d{1,2})/i;
+      const taxWords = /^(tax|vat|gst|hst|sales tax|state tax|local tax|total tax)/i;
       const tipWords = /^(tip|gratuity|service charge|service fee|svc)/i;
-      const totalWords = /^(total|amount due|balance due|grand total)/i;
+      const totalWords = /^(total$|total\s|amount due|balance due|grand total)/i;
+      const subtotalWords = /^(subtotal|sub total|sub-total)/i;
 
       for (const line of lines) {
-        // Find price pattern: digits with decimal (e.g., 12.50, $12.50)
-        const priceMatch = line.match(/\$?\s*(\d+\.\d{2})\s*$/);
+        // Find price pattern: $digits.cents or just digits.cents at end of line
+        const priceMatch = line.match(/\$?\s*(\d{1,6}\.\d{2})\s*$/);
         if (!priceMatch) continue;
 
         const price = parseFloat(priceMatch[1]);
-        if (isNaN(price) || price <= 0) continue;
+        if (isNaN(price) || price < 0) continue;
 
         // Get the name part (everything before the price)
         let name = line.slice(0, line.lastIndexOf(priceMatch[0])).trim();
-        // Clean up leading special chars, quantities like "1x", "2 x"
-        name = name.replace(/^[\d]+\s*[xX×]\s*/, '').replace(/^[^a-zA-Z]+/, '').trim();
+        // Remove trailing dots, dashes, spaces used as separators
+        name = name.replace(/[\.\-–—_\s]+$/, '').trim();
+        // Clean up leading quantities "1 ", "2  ", "1x", etc and special chars
+        name = name.replace(/^\d+\s*[xX×]?\s+/, '').replace(/^[^a-zA-Z]+/, '').trim();
 
         if (!name || name.length < 2) continue;
+        // Skip $0.00 items (like "Medium $0.00" modifiers)
+        if (price === 0) continue;
 
         // Categorize
-        if (taxWords.test(name)) {
-          foundTax = price;
-        } else if (tipWords.test(name)) {
-          foundTip = price;
+        if (subtotalWords.test(name)) {
+          foundSubtotal = price;
         } else if (totalWords.test(name)) {
           foundTotal = price;
+        } else if (taxWords.test(name)) {
+          // Sum multiple tax lines
+          foundTax = (foundTax || 0) + price;
+        } else if (tipWords.test(name)) {
+          foundTip = price;
         } else if (!skipWords.test(name)) {
           items.push({ name, price, quantity: 1 });
         }
       }
 
       if (items.length === 0) {
-        setOcrStatus('No items found. Try a clearer photo or enter manually.');
+        setOcrStatus('No items found. Try a clearer photo or enter items manually.');
         setOcrScanning(false);
         return;
       }
 
       // Populate the form
       setManualItems(prev => [...prev, ...items]);
-      if (foundTax != null && !manualTax) setManualTax(String(foundTax));
-      if (foundTip != null && !manualTip) setManualTip(String(foundTip));
-      if (foundTotal != null && !manualTotal) setManualTotal(String(foundTotal));
+      if (foundTax != null && !manualTax) setManualTax(String(foundTax.toFixed(2)));
+      if (foundTip != null && !manualTip) setManualTip(String(foundTip.toFixed(2)));
+      if (foundTotal != null && !manualTotal) setManualTotal(String(foundTotal.toFixed(2)));
       setRefPhotoOpen(false);
-      setOcrStatus(`Found ${items.length} item${items.length > 1 ? 's' : ''}! Review and edit below.`);
+      setOcrStatus(`Found ${items.length} item${items.length > 1 ? 's' : ''}${foundTax ? ', tax' : ''}${foundTotal ? ', total' : ''}! Review and edit below.`);
     } catch (err) {
       setOcrStatus('OCR failed: ' + err.message);
     } finally {
