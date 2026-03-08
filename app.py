@@ -381,14 +381,16 @@ function App() {
     if (!imgData || people.length < 2) return;
     setAnalyzing(true); setError(null);
     try {
+      const compressed = await compressImage(imgData);
       const res = await fetch('/api/analyze-bill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: imgData, mediaType: imgType })
+        body: JSON.stringify({ image: compressed, mediaType: 'image/jpeg' })
       });
       const rawText = await res.text();
       let data;
-      try { data = JSON.parse(rawText); } catch { throw new Error('Server returned invalid response. Make sure GEMINI_API_KEY is set.'); }
+      if (!res.ok) throw new Error(`Server error (${res.status}): ${rawText.slice(0, 200)}`);
+      try { data = JSON.parse(rawText); } catch { throw new Error('Server returned invalid response. Try a smaller or clearer photo.'); }
       if (data.error) throw new Error(data.error);
       setBill(data);
       const init = {};
@@ -438,6 +440,25 @@ function App() {
 
   const cancelEdit = () => setEditingIdx(null);
 
+  // ── Compress image to reduce payload size (max 1200px, JPEG 0.7 quality)
+  const compressImage = (dataUrl) => new Promise((resolve) => {
+    const img = new window.Image();
+    img.onload = () => {
+      const MAX = 1200;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        const ratio = Math.min(MAX / w, MAX / h);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.src = dataUrl;
+  });
+
   // ── AI scan (uses photo from refPhoto, sends to Gemini, auto-fills items)
   const scanBillPhoto = async () => {
     if (!refPhoto || scanning) return;
@@ -447,16 +468,19 @@ function App() {
       return;
     }
     setScanning(true);
-    setScanStatus('AI is reading your bill…');
+    setScanStatus('Compressing image…');
     try {
+      const compressed = await compressImage(refPhoto);
+      setScanStatus('AI is reading your bill…');
       const res = await fetch('/api/analyze-bill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: refPhoto, mediaType: 'image/jpeg' })
+        body: JSON.stringify({ image: compressed, mediaType: 'image/jpeg' })
       });
       const text = await res.text();
       let data;
-      try { data = JSON.parse(text); } catch { throw new Error('Server returned invalid response. Make sure GEMINI_API_KEY is set and the server has google-generativeai installed.'); }
+      if (!res.ok) throw new Error(`Server error (${res.status}): ${text.slice(0, 200)}`);
+      try { data = JSON.parse(text); } catch { throw new Error('Server returned invalid response. Try a smaller or clearer photo.'); }
       if (data.error) throw new Error(data.error);
 
       // Auto-fill items
