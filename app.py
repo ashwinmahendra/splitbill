@@ -1,11 +1,17 @@
 from flask import Flask, request, jsonify
-import google.generativeai as genai
 import os
 import json
 import re
 import base64
-from PIL import Image
 import io
+
+# Optional AI imports — app works without them
+try:
+    import google.generativeai as genai
+    from PIL import Image
+    HAS_AI = True
+except ImportError:
+    HAS_AI = False
 
 app = Flask(__name__)
 
@@ -79,6 +85,7 @@ HTML = r"""<!DOCTYPE html>
     .input { flex: 1; padding: 11px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px;
              font-size: 14px; outline: none; transition: border-color .2s; background: #fafbfc; }
     .input:focus { border-color: #1db87a; background: #fff; }
+    .input-sm { width: 90px; flex: none; }
     .btn-green { padding: 11px 20px; background: #1db87a; color: #fff; border: none;
                  border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer;
                  transition: all .2s; white-space: nowrap; }
@@ -189,6 +196,28 @@ HTML = r"""<!DOCTYPE html>
     .rest-name { font-size: 20px; font-weight: 800; margin-bottom: 4px; color: #111827; }
     .rest-sub  { font-size: 13px; color: #94a3b8; margin-bottom: 18px; }
 
+    /* ── Mode toggle ── */
+    .mode-toggle { display: flex; gap: 2px; background: #f1f5f9; border-radius: 10px;
+                   padding: 3px; margin-bottom: 18px; }
+    .mode-btn { flex: 1; padding: 10px 8px; border: none; border-radius: 8px; font-size: 13px;
+                font-weight: 600; cursor: pointer; text-align: center; transition: all .2s;
+                background: transparent; color: #94a3b8; }
+    .mode-btn.active { background: #fff; color: #1db87a; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+
+    /* ── Manual item row ── */
+    .manual-item { display: flex; align-items: center; gap: 10px; padding: 10px 0;
+                   border-bottom: 1px solid #f3f4f6; }
+    .manual-item:last-child { border-bottom: none; }
+    .manual-item-name { flex: 1; font-size: 14px; font-weight: 500; }
+    .manual-item-price { font-size: 14px; font-weight: 700; color: #1db87a; }
+
+    /* ── Tax/tip inputs ── */
+    .field-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+    .field-label { font-size: 14px; color: #64748b; font-weight: 500; width: 50px; }
+    .field-input { flex: 1; padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px;
+                   font-size: 14px; outline: none; background: #fafbfc; }
+    .field-input:focus { border-color: #1db87a; background: #fff; }
+
     @media (max-width: 480px) {
       .tab { font-size: 11px; padding: 9px 4px; }
       .content { padding: 16px; }
@@ -199,7 +228,7 @@ HTML = r"""<!DOCTYPE html>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useRef } = React;
+const { useState, useRef, useEffect } = React;
 
 const PALETTE = [
   '#FF6B6B','#4ECDC4','#45B7D1','#A29BFE',
@@ -240,6 +269,23 @@ function App() {
   const [error, setError]         = useState(null);
   const [drag, setDrag]           = useState(false);
   const fileRef = useRef(null);
+
+  // Manual entry state
+  const [billMode, setBillMode]       = useState('manual'); // 'manual' or 'scan'
+  const [manualItems, setManualItems] = useState([]);
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemPrice, setNewItemPrice] = useState('');
+  const [manualTax, setManualTax]     = useState('');
+  const [manualTip, setManualTip]     = useState('');
+  const [hasAI, setHasAI]             = useState(false);
+
+  // Check if AI is available
+  useEffect(() => {
+    fetch('/api/check-ai').then(r => r.json()).then(d => {
+      setHasAI(d.available);
+      if (!d.available) setBillMode('manual');
+    }).catch(() => {});
+  }, []);
 
   // ── People helpers
   const addPerson = e => {
@@ -284,7 +330,7 @@ function App() {
     setImgPrev(null); setImgData(null); setBill(null); setError(null);
   };
 
-  // ── Analyze
+  // ── Analyze (AI scan)
   const analyze = async () => {
     if (!imgData || people.length < 2) return;
     setAnalyzing(true); setError(null);
@@ -297,7 +343,6 @@ function App() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setBill(data);
-      // default: assign every item to everyone
       const init = {};
       (data.items || []).forEach((_, i) => {
         init[i] = people.map(p => p.id);
@@ -309,6 +354,44 @@ function App() {
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  // ── Manual entry helpers
+  const addManualItem = e => {
+    e?.preventDefault();
+    const name = newItemName.trim();
+    const price = parseFloat(newItemPrice);
+    if (!name || isNaN(price) || price <= 0) return;
+    setManualItems(items => [...items, { name, price, quantity: 1 }]);
+    setNewItemName('');
+    setNewItemPrice('');
+  };
+
+  const removeManualItem = idx => {
+    setManualItems(items => items.filter((_, i) => i !== idx));
+  };
+
+  const finishManualEntry = () => {
+    if (manualItems.length === 0 || people.length < 2) return;
+    const tax = parseFloat(manualTax) || 0;
+    const tip = parseFloat(manualTip) || 0;
+    const subtotal = manualItems.reduce((s, it) => s + it.price, 0);
+    const billData = {
+      restaurant: '',
+      items: manualItems,
+      subtotal,
+      tax,
+      tip,
+      total: subtotal + tax + tip,
+      currency: '$'
+    };
+    setBill(billData);
+    const init = {};
+    manualItems.forEach((_, i) => {
+      init[i] = people.map(p => p.id);
+    });
+    setAsgn(init);
+    setTab('assign');
   };
 
   // ── Assignment toggle
@@ -361,7 +444,7 @@ function App() {
     ? (bill.total || (bill.subtotal || 0) + (bill.tax || 0) + (bill.tip || 0))
     : 0;
 
-  // Settlement (who pays the payer back)
+  // Settlement
   const settlement = (() => {
     if (!payerId || !bill) return [];
     const payer = people.find(p => p.id === payerId);
@@ -429,65 +512,183 @@ function App() {
   // ════════════════════════════════════════
   // RENDER: Bill tab
   // ════════════════════════════════════════
-  const TabBill = () => (
-    <div className="content">
-      {people.length < 2 && (
-        <div className="alert alert-info">
-          ℹ️ Please add at least 2 people in the <strong>People</strong> tab first.
-        </div>
-      )}
+  const TabBill = () => {
+    const manualSubtotal = manualItems.reduce((s, it) => s + it.price, 0);
 
-      <div className="card-title">Upload your bill photo</div>
-
-      {!imgPrev ? (
-        <div
-          className={`upload-zone ${drag ? 'drag' : ''}`}
-          onClick={() => fileRef.current?.click()}
-          onDragOver={e => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={e => { e.preventDefault(); setDrag(false); loadFile(e.dataTransfer.files[0]); }}
-        >
-          <div className="upload-icon">📸</div>
-          <div className="upload-text">Tap or drag & drop a photo</div>
-          <div className="upload-hint">JPG · PNG · HEIC · WEBP</div>
-        </div>
-      ) : (
-        <>
-          <img src={imgPrev} className="bill-preview" alt="Bill preview" />
-          <div style={{ marginBottom: 14 }}>
-            <button className="link-btn" onClick={resetImage}>✕ Remove & use a different photo</button>
+    return (
+      <div className="content">
+        {people.length < 2 && (
+          <div className="alert alert-info">
+            Please add at least 2 people in the <strong>People</strong> tab first.
           </div>
-        </>
-      )}
+        )}
 
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        style={{ display: 'none' }}
-        onChange={e => loadFile(e.target.files[0])}
-      />
-
-      {error && (
-        <div className="alert alert-err" style={{ marginTop: 14 }}>
-          ⚠️ {error}
+        {/* Mode toggle */}
+        <div className="mode-toggle">
+          <button
+            className={`mode-btn ${billMode === 'manual' ? 'active' : ''}`}
+            onClick={() => setBillMode('manual')}
+          >
+            ✏️ Enter Manually
+          </button>
+          {hasAI && (
+            <button
+              className={`mode-btn ${billMode === 'scan' ? 'active' : ''}`}
+              onClick={() => setBillMode('scan')}
+            >
+              📸 Scan with AI
+            </button>
+          )}
         </div>
-      )}
 
-      {imgPrev && (
-        <button
-          className="btn-analyze"
-          onClick={analyze}
-          disabled={analyzing || people.length < 2}
-        >
-          {analyzing
-            ? <><div className="spinner"></div> AI is reading your bill…</>
-            : <><span>✨</span> Analyze Bill with AI</>
-          }
-        </button>
-      )}
-    </div>
-  );
+        {/* ── MANUAL MODE ── */}
+        {billMode === 'manual' && (
+          <>
+            <div className="card-title">Add bill items</div>
+
+            {manualItems.length > 0 && (
+              <div className="card">
+                {manualItems.map((item, i) => (
+                  <div key={i} className="manual-item">
+                    <span className="manual-item-name">{item.name}</span>
+                    <span className="manual-item-price">{fmt(item.price)}</span>
+                    <button className="btn-x" onClick={() => removeManualItem(i)} title="Remove">×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <form className="input-row" onSubmit={addManualItem}>
+              <input
+                className="input"
+                placeholder="Item name…"
+                value={newItemName}
+                onChange={e => setNewItemName(e.target.value)}
+              />
+              <input
+                className="input input-sm"
+                placeholder="Price"
+                type="number"
+                step="0.01"
+                min="0"
+                value={newItemPrice}
+                onChange={e => setNewItemPrice(e.target.value)}
+              />
+              <button
+                className="btn-green"
+                type="submit"
+                disabled={!newItemName.trim() || !newItemPrice || parseFloat(newItemPrice) <= 0}
+              >
+                Add
+              </button>
+            </form>
+
+            {manualItems.length > 0 && (
+              <>
+                <div className="card" style={{ marginTop: 18 }}>
+                  <div className="card-title">Tax & Tip (optional)</div>
+                  <div className="field-row">
+                    <span className="field-label">Tax</span>
+                    <input
+                      className="field-input"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.00"
+                      value={manualTax}
+                      onChange={e => setManualTax(e.target.value)}
+                    />
+                  </div>
+                  <div className="field-row">
+                    <span className="field-label">Tip</span>
+                    <input
+                      className="field-input"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.00"
+                      value={manualTip}
+                      onChange={e => setManualTip(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="total-bar">
+                  <span className="total-lbl">Subtotal</span>
+                  <span className="total-amt">
+                    {fmt(manualSubtotal + (parseFloat(manualTax) || 0) + (parseFloat(manualTip) || 0))}
+                  </span>
+                </div>
+
+                <button
+                  className="btn-next"
+                  onClick={finishManualEntry}
+                  disabled={people.length < 2}
+                >
+                  Continue to Assign →
+                </button>
+              </>
+            )}
+          </>
+        )}
+
+        {/* ── SCAN MODE ── */}
+        {billMode === 'scan' && (
+          <>
+            <div className="card-title">Upload your bill photo</div>
+
+            {!imgPrev ? (
+              <div
+                className={`upload-zone ${drag ? 'drag' : ''}`}
+                onClick={() => fileRef.current?.click()}
+                onDragOver={e => { e.preventDefault(); setDrag(true); }}
+                onDragLeave={() => setDrag(false)}
+                onDrop={e => { e.preventDefault(); setDrag(false); loadFile(e.dataTransfer.files[0]); }}
+              >
+                <div className="upload-icon">📸</div>
+                <div className="upload-text">Tap or drag & drop a photo</div>
+                <div className="upload-hint">JPG · PNG · HEIC · WEBP</div>
+              </div>
+            ) : (
+              <>
+                <img src={imgPrev} className="bill-preview" alt="Bill preview" />
+                <div style={{ marginBottom: 14 }}>
+                  <button className="link-btn" onClick={resetImage}>✕ Remove & use a different photo</button>
+                </div>
+              </>
+            )}
+
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={e => loadFile(e.target.files[0])}
+            />
+
+            {error && (
+              <div className="alert alert-err" style={{ marginTop: 14 }}>
+                ⚠️ {error}
+              </div>
+            )}
+
+            {imgPrev && (
+              <button
+                className="btn-analyze"
+                onClick={analyze}
+                disabled={analyzing || people.length < 2}
+              >
+                {analyzing
+                  ? <><div className="spinner"></div> AI is reading your bill…</>
+                  : <><span>✨</span> Analyze Bill with AI</>
+                }
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    );
+  };
 
   // ════════════════════════════════════════
   // RENDER: Assign tab
@@ -497,8 +698,8 @@ function App() {
       <div className="content">
         <div className="empty">
           <div className="empty-icon">🧾</div>
-          <div className="empty-txt">No bill analyzed yet</div>
-          <div className="empty-sub">Go to the Bill tab and upload a photo</div>
+          <div className="empty-txt">No bill entered yet</div>
+          <div className="empty-sub">Go to the Bill tab to add items</div>
         </div>
       </div>
     );
@@ -684,17 +885,17 @@ function App() {
               .map(s => `${s.from.name} pays ${s.to.name} ${fmt(s.amount, cur)}`)
               .join('\n');
             const txt =
-              `💸 SplitBill${bill.restaurant ? ' — ' + bill.restaurant : ''}\n\n` +
+              `SplitBill${bill.restaurant ? ' — ' + bill.restaurant : ''}\n\n` +
               lines +
               (slines ? '\n\nSettlement:\n' + slines : '');
             if (navigator.clipboard) {
-              navigator.clipboard.writeText(txt).then(() => alert('✅ Copied to clipboard!'));
+              navigator.clipboard.writeText(txt).then(() => alert('Copied to clipboard!'));
             } else {
               alert(txt);
             }
           }}
         >
-          📋 Copy Summary
+          Copy Summary
         </button>
 
         {/* Start over */}
@@ -704,10 +905,11 @@ function App() {
           onClick={() => {
             setBill(null); setImgPrev(null); setImgData(null);
             setAsgn({}); setPayerId(''); setError(null);
+            setManualItems([]); setManualTax(''); setManualTip('');
             setTab('bill');
           }}
         >
-          🔄 Split Another Bill
+          Split Another Bill
         </button>
       </div>
     );
@@ -724,7 +926,7 @@ function App() {
           <div className="logo-wrap">💸</div>
           <div>
             <div className="app-title">SplitBill</div>
-            <div className="app-sub">Smart bill splitting powered by AI</div>
+            <div className="app-sub">Smart bill splitting with friends</div>
           </div>
         </div>
         <div className="tabs">
@@ -767,8 +969,17 @@ def index():
     return HTML
 
 
+@app.route('/api/check-ai')
+def check_ai():
+    available = HAS_AI and bool(os.environ.get('GEMINI_API_KEY', '').strip())
+    return jsonify({'available': available})
+
+
 @app.route('/api/analyze-bill', methods=['POST'])
 def analyze_bill():
+    if not HAS_AI:
+        return jsonify({'error': 'AI scanning is not available. Use manual entry instead.'}), 400
+
     try:
         body       = request.get_json(force=True)
         image_data = body.get('image', '')
@@ -779,7 +990,7 @@ def analyze_bill():
 
         api_key = os.environ.get('GEMINI_API_KEY', '').strip()
         if not api_key:
-            return jsonify({'error': 'GEMINI_API_KEY is not set. See the README.'}), 500
+            return jsonify({'error': 'GEMINI_API_KEY is not set. Use manual entry instead.'}), 500
 
         # Decode image and load with PIL
         image_bytes = base64.b64decode(image_data)
@@ -835,5 +1046,10 @@ def analyze_bill():
 if __name__ == '__main__':
     port  = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('DEBUG', 'false').lower() == 'true'
-    print(f"\n🚀  SplitBill running at http://localhost:{port}\n")
+    print(f"\n  SplitBill running at http://localhost:{port}")
+    if HAS_AI and os.environ.get('GEMINI_API_KEY', '').strip():
+        print("  AI photo scanning: enabled")
+    else:
+        print("  AI photo scanning: disabled (no GEMINI_API_KEY)")
+    print()
     app.run(host='0.0.0.0', port=port, debug=debug)
