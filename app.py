@@ -27,6 +27,7 @@ HTML = r"""<!DOCTYPE html>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -245,6 +246,21 @@ HTML = r"""<!DOCTYPE html>
     /* ── Math warning ── */
     .alert-warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
 
+    /* ── OCR progress ── */
+    .ocr-bar { margin-top: 10px; }
+    .ocr-progress { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; }
+    .ocr-fill { height: 100%; background: linear-gradient(90deg, #1db87a, #16a067);
+                border-radius: 3px; transition: width .3s; }
+    .ocr-status { font-size: 12px; color: #64748b; margin-top: 6px; text-align: center; }
+    .btn-ocr { width: 100%; padding: 12px; background: linear-gradient(135deg, #6366f1, #4f46e5);
+               color: #fff; border: none; border-radius: 10px; font-size: 14px; font-weight: 700;
+               cursor: pointer; display: flex; align-items: center; justify-content: center;
+               gap: 8px; margin-top: 10px; transition: all .2s;
+               box-shadow: 0 3px 10px rgba(99,102,241,0.3); }
+    .btn-ocr:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 5px 15px rgba(99,102,241,0.4); }
+    .btn-ocr:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .ocr-note { font-size: 11px; color: #94a3b8; text-align: center; margin-top: 6px; }
+
     /* ── Tax/tip inputs ── */
     .field-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
     .field-label { font-size: 14px; color: #64748b; font-weight: 500; width: 50px; }
@@ -319,6 +335,9 @@ function App() {
   const [refPhoto, setRefPhoto]       = useState(null);
   const [refPhotoOpen, setRefPhotoOpen] = useState(true);
   const refPhotoRef = useRef(null);
+  const [ocrScanning, setOcrScanning] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrStatus, setOcrStatus]     = useState('');
 
   // Check if AI is available
   useEffect(() => {
@@ -430,6 +449,86 @@ function App() {
   };
 
   const cancelEdit = () => setEditingIdx(null);
+
+  // ── OCR scanning
+  const runOCR = async () => {
+    if (!refPhoto || ocrScanning) return;
+    setOcrScanning(true);
+    setOcrProgress(0);
+    setOcrStatus('Loading OCR engine…');
+    try {
+      const result = await Tesseract.recognize(refPhoto, 'eng', {
+        logger: m => {
+          if (m.status === 'recognizing text') {
+            setOcrProgress(Math.round(m.progress * 100));
+            setOcrStatus('Reading bill…');
+          } else if (m.status === 'loading language traineddata') {
+            setOcrStatus('Loading language data…');
+          }
+        }
+      });
+
+      const text = result.data.text;
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+      // Parse lines for items with prices
+      const items = [];
+      let foundTax = null;
+      let foundTip = null;
+      let foundTotal = null;
+
+      // Keywords to skip (not individual items)
+      const skipWords = /^(subtotal|sub total|total|amount due|balance|change|cash|card|visa|mastercard|amex|thank|welcome|order|table|server|guest|date|time|receipt|invoice|check|tel|phone|fax|www|http|address|\d{1,2}[\/\-]\d{1,2})/i;
+      const taxWords = /^(tax|vat|gst|hst|sales tax|state tax)/i;
+      const tipWords = /^(tip|gratuity|service charge|service fee|svc)/i;
+      const totalWords = /^(total|amount due|balance due|grand total)/i;
+
+      for (const line of lines) {
+        // Find price pattern: digits with decimal (e.g., 12.50, $12.50)
+        const priceMatch = line.match(/\$?\s*(\d+\.\d{2})\s*$/);
+        if (!priceMatch) continue;
+
+        const price = parseFloat(priceMatch[1]);
+        if (isNaN(price) || price <= 0) continue;
+
+        // Get the name part (everything before the price)
+        let name = line.slice(0, line.lastIndexOf(priceMatch[0])).trim();
+        // Clean up leading special chars, quantities like "1x", "2 x"
+        name = name.replace(/^[\d]+\s*[xX×]\s*/, '').replace(/^[^a-zA-Z]+/, '').trim();
+
+        if (!name || name.length < 2) continue;
+
+        // Categorize
+        if (taxWords.test(name)) {
+          foundTax = price;
+        } else if (tipWords.test(name)) {
+          foundTip = price;
+        } else if (totalWords.test(name)) {
+          foundTotal = price;
+        } else if (!skipWords.test(name)) {
+          items.push({ name, price, quantity: 1 });
+        }
+      }
+
+      if (items.length === 0) {
+        setOcrStatus('No items found. Try a clearer photo or enter manually.');
+        setOcrScanning(false);
+        return;
+      }
+
+      // Populate the form
+      setManualItems(prev => [...prev, ...items]);
+      if (foundTax != null && !manualTax) setManualTax(String(foundTax));
+      if (foundTip != null && !manualTip) setManualTip(String(foundTip));
+      if (foundTotal != null && !manualTotal) setManualTotal(String(foundTotal));
+      setRefPhotoOpen(false);
+      setOcrStatus(`Found ${items.length} item${items.length > 1 ? 's' : ''}! Review and edit below.`);
+    } catch (err) {
+      setOcrStatus('OCR failed: ' + err.message);
+    } finally {
+      setOcrScanning(false);
+    }
+  };
 
   const finishManualEntry = () => {
     if (manualItems.length === 0 || people.length < 2) return;
@@ -629,8 +728,35 @@ function App() {
                   ) : (
                     <>
                       <img src={refPhoto} className="photo-ref-img" alt="Bill reference" />
+
+                      <button
+                        className="btn-ocr"
+                        onClick={runOCR}
+                        disabled={ocrScanning}
+                      >
+                        {ocrScanning
+                          ? <><div className="spinner"></div> Scanning…</>
+                          : <><span>🔍</span> Extract Items from Photo</>
+                        }
+                      </button>
+                      <div className="ocr-note">
+                        Free OCR — runs in your browser, no data sent to servers
+                      </div>
+
+                      {ocrScanning && (
+                        <div className="ocr-bar">
+                          <div className="ocr-progress">
+                            <div className="ocr-fill" style={{ width: `${ocrProgress}%` }}></div>
+                          </div>
+                        </div>
+                      )}
+
+                      {ocrStatus && (
+                        <div className="ocr-status">{ocrStatus}</div>
+                      )}
+
                       <div style={{ marginTop: 8, textAlign: 'center' }}>
-                        <button className="link-btn" onClick={() => setRefPhoto(null)}>
+                        <button className="link-btn" onClick={() => { setRefPhoto(null); setOcrStatus(''); }}>
                           ✕ Remove photo
                         </button>
                       </div>
